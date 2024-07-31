@@ -1,46 +1,59 @@
 import os
-import numpy as np
-from PIL import Image
+import rasterio
+from rasterio.mask import mask
+import geopandas as gpd
+from shapely.geometry import mapping
 
 
-# 读取 ASCII 文件并跳过头信息
-def read_ascii_file(file_path):
-    data = []
-    with open(file_path, 'r') as file:
-        for line in file:
-            if line.startswith(
-                    ('ncols', 'nrows', 'xllcorner', 'yllcorner', 'cellsize', 'NODATA_value', 'xllcenter', 'yllcenter')):
-                continue
-            try:
-                row = list(map(float, line.split()))
-                data.append(row)
-            except ValueError as e:
-                print("Error converting line to float: {line}")
-                raise e
-    return np.array(data)
+# 读取 Shapefile 文件
+def read_shapefile(shapefile_path):
+    shapefile = gpd.read_file(shapefile_path)
+    return shapefile
 
 
-# 将 ASCII 数据转换为图像并保存为 TIFF
-def ascii_to_tiff(ascii_file, tiff_file):
-    data = read_ascii_file(ascii_file)
-    image = Image.fromarray(data.astype(np.float32))  # 假设数据是浮点数
-    image.save(tiff_file, format='TIFF')
+# 根据 Shapefile 裁剪 TIFF 文件
+def clip_tiff(tiff_file, shapefile, output_file):
+    with rasterio.open(tiff_file) as src:
+        # 获取 Shapefile 的几何信息
+        geometries = [mapping(geom) for geom in shapefile.geometry]
+        # 裁剪 TIFF 文件
+        out_image, out_transform = mask(src, geometries, crop=True)
+        out_meta = src.meta.copy()
+        out_meta.update({
+            "driver": "GTiff",
+            "height": out_image.shape[1],
+            "width": out_image.shape[2],
+            "transform": out_transform
+        })
+
+        with rasterio.open(output_file, "w", **out_meta) as dest:
+            dest.write(out_image)
 
 
-# 遍历目录并转换所有文件
-def convert_all_files(ascii_dir, tiff_dir):
-    if not os.path.exists(tiff_dir):
-        os.makedirs(tiff_dir)
+# 遍历目录并裁剪所有 TIFF 文件
+def process_tiff_files(tiff_dir, output_dir, shapefile):
+    for root, _, files in os.walk(tiff_dir):
+        for filename in files:
+            if filename.lower().endswith((".tif", ".tiff")):
+                tiff_file = os.path.join(root, filename)
+                relative_path = os.path.relpath(tiff_file, tiff_dir)
+                output_file = os.path.join(output_dir, relative_path)
+                output_folder = os.path.dirname(output_file)
 
-    for filename in os.listdir(ascii_dir):
-        if filename.endswith(".txt"):
-            ascii_file = os.path.join(ascii_dir, filename)
-            tiff_file = os.path.join(tiff_dir, filename.replace(".txt", ".tiff"))
-            ascii_to_tiff(ascii_file, tiff_file)
-            print("Converted {ascii_file} to {tiff_file}")
+                if not os.path.exists(output_folder):
+                    os.makedirs(output_folder)
+
+                clip_tiff(tiff_file, shapefile, output_file)
+                print(f"Clipped {tiff_file} to {output_file}")
 
 
-ascii_dir = r'C:\Users\cumin\Desktop\1.download_data\中国雪深长时间序列数据集（1979-2023）\snow depth\snowdepth-1979'
-tiff_dir = r'C:\Users\cumin\Desktop\2.processing_data\ASCII_to_TIFF\1979'
+# 示例用法
+tiff_dir = r'C:\Users\cumin\Desktop\2.数据处理\To_TIFF'
+shapefile_path = r'C:\Users\cumin\Desktop\1.下载数据\内蒙古矢量边界_草地类型\Export_Output.shp'
+output_dir = r'C:\Users\cumin\Desktop\2.数据处理\Clip_TIFF'
 
-convert_all_files(ascii_dir, tiff_dir)
+# 读取 Shapefile
+shapefile = read_shapefile(shapefile_path)
+
+# 处理所有 TIFF 文件
+process_tiff_files(tiff_dir, output_dir, shapefile)
